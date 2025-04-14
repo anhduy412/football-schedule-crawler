@@ -1,0 +1,13 @@
+beautifulsoup4
+certifi
+charset-normalizer
+idna
+numpy
+pandas
+python-dateutil
+pytz
+requests
+six
+soupsieve
+tzdata
+urllib3

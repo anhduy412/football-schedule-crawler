@@ -1,0 +1,107 @@
+version: "3.8"
+
+networks:
+  mynetwork:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+
+x-minio-common: &minio-common
+  image: quay.io/minio/minio:latest
+  command: server --console-address ":9090" mnt/data
+  ports:
+    - "9000:9000"
+    - "9090:9090"
+  env_file: ./minio/.env
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:9090/minio/health/live"]
+    interval: 30s
+    timeout: 20s
+    retries: 3
+  networks:
+    - mynetwork
+
+x-airflow-common: &airflow-common
+  # image: kiriharacken/custom-airflow:latest
+  image: apache/airflow:2.6.0
+  user: "${AIRFLOW_UID}:0"
+  env_file:
+    - .env
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./data:/opt/airflow/data
+    - ./scrape:/opt/airflow/scrape
+  networks:
+    - mynetwork
+
+x-depends-on: &depends-on
+  depends_on:
+    postgres:
+      condition: service_healthy
+    airflow-init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    networks:
+      mynetwork:
+        ipv4_address: 172.28.0.6
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+
+  scheduler:
+    <<: [*airflow-common, *depends-on]
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: on-failure
+    ports:
+      - "8793:8793"
+
+  webserver:
+    <<: [*airflow-common, *depends-on]
+    container_name: airflow-webserver
+    restart: always
+    command: webserver
+    ports:
+      - "8080:8080"
+
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+
+  minio1:
+    <<: *minio-common
+    hostname: minio1
+    volumes:
+      - type: bind
+        source: ./minio_storage
+        target: /mnt/data
+
+volumes:
+  postgres_data:
